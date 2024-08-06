@@ -2975,7 +2975,7 @@ function jsPDF(options) {
     }
   });
 
-  var buildDocument = (API.__private__.buildDocument = function() {
+  var buildDocument = (API.__private__.buildDocument = function(raw = false) {
     resetDocument();
     setOutputDestination(content);
 
@@ -2997,6 +2997,14 @@ function jsPDF(options) {
     out("%%EOF");
 
     setOutputDestination(pages[currentPage]);
+
+    if (raw) {
+      for (let index = 0; index < content.length - 1; index++) {
+        content[index] += "\n";
+      }
+
+      return content;
+    } 
 
     return content.join("\n");
   });
@@ -3048,6 +3056,8 @@ function jsPDF(options) {
     switch (type) {
       case undefined:
         return buildDocument();
+      case "stringArray":
+        return buildDocument(true);
       case "save":
         API.save(options.filename);
         break;
