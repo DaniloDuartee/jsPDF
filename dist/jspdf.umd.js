@@ -1,7 +1,7 @@
 /** @license
  *
  * jsPDF - PDF Document creation from JavaScript
- * Version 2.5.1 Built on 2022-01-28T15:37:57.789Z
+ * Version 2.5.1 Built on 2024-08-06T17:10:31.590Z
  *                      CommitID 00000000
  *
  * Copyright (c) 2010-2021 James Hall <james@parall.ax>, https://github.com/MrRio/jsPDF
@@ -481,9 +481,10 @@
   var atob, btoa;
 
   (function () {
+    // @if MODULE_FORMAT!='cjs'
     atob = globalObject.atob.bind(globalObject);
     btoa = globalObject.btoa.bind(globalObject);
-    return;
+    return; // @endif
   })();
 
   /**
@@ -1717,18 +1718,6 @@
 
     var write = API.__private__.write = function (value) {
       return out(arguments.length === 1 ? value.toString() : Array.prototype.join.call(arguments, " "));
-    };
-
-    var getArrayBuffer = API.__private__.getArrayBuffer = function (data) {
-      var len = data.length,
-          ab = new ArrayBuffer(len),
-          u8 = new Uint8Array(ab);
-
-      while (len--) {
-        u8[len] = data.charCodeAt(len);
-      }
-
-      return ab;
     };
 
     var standardFonts = [["Helvetica", "helvetica", "normal", "WinAnsiEncoding"], ["Helvetica-Bold", "helvetica", "bold", "WinAnsiEncoding"], ["Helvetica-Oblique", "helvetica", "italic", "WinAnsiEncoding"], ["Helvetica-BoldOblique", "helvetica", "bolditalic", "WinAnsiEncoding"], ["Courier", "courier", "normal", "WinAnsiEncoding"], ["Courier-Bold", "courier", "bold", "WinAnsiEncoding"], ["Courier-Oblique", "courier", "italic", "WinAnsiEncoding"], ["Courier-BoldOblique", "courier", "bolditalic", "WinAnsiEncoding"], ["Times-Roman", "times", "normal", "WinAnsiEncoding"], ["Times-Bold", "times", "bold", "WinAnsiEncoding"], ["Times-Italic", "times", "italic", "WinAnsiEncoding"], ["Times-BoldItalic", "times", "bolditalic", "WinAnsiEncoding"], ["ZapfDingbats", "zapfdingbats", "normal", null], ["Symbol", "symbol", "normal", null]];
@@ -3810,11 +3799,57 @@
       out("" + offsetOfXRef);
       out("%%EOF");
       setOutputDestination(pages[currentPage]);
+      return content;
+    };
+
+    var getString = API.__private__.getString = function (content) {
       return content.join("\n");
     };
 
-    var getBlob = API.__private__.getBlob = function (data) {
-      return new Blob([getArrayBuffer(data)], {
+    var getArrayBuffer = API.__private__.getArrayBuffer = function (content) {
+      var length = 0;
+
+      for (var i = 0; i < content.length; i++) {
+        var contentLine = content[i];
+        length += contentLine.length + 1; // +1 for newline
+      }
+
+      var arrayBuffer = new ArrayBuffer(length);
+      var uint8Array = new Uint8Array(arrayBuffer);
+      var index = 0;
+
+      for (var _i = 0; _i < content.length; _i++) {
+        var _contentLine = content[_i];
+
+        for (var j = 0; j < _contentLine.length; j++) {
+          uint8Array[index++] = _contentLine.charCodeAt(j);
+        }
+
+        uint8Array[index++] = 0x0a; // newline
+      }
+
+      return arrayBuffer;
+    };
+
+    var getBlob = API.__private__.getBlob = function (content) {
+      var blobs = [];
+
+      for (var i = 0; i < content.length; i++) {
+        var contentLine = content[i];
+        var arrayBuffer = new ArrayBuffer(contentLine.length + 1); // +1 for newline
+
+        var uint8Array = new Uint8Array(arrayBuffer);
+
+        for (var j = 0; j < contentLine.length; j++) {
+          uint8Array[j] = contentLine.charCodeAt(j);
+        }
+
+        uint8Array[contentLine.length] = 0x0a; // newline
+
+        blobs.push(new Blob([arrayBuffer]));
+      }
+
+      return new Blob(blobs, {
         type: "application/pdf"
       });
     };
@@ -3857,7 +3892,7 @@
 
       switch (type) {
         case undefined:
-          return buildDocument();
+          return getString(buildDocument());
 
         case "save":
           API.save(options.filename);
@@ -3883,7 +3918,7 @@
         case "datauristring":
         case "dataurlstring":
           var dataURI = "";
-          var pdfDocument = buildDocument();
+          var pdfDocument = getString(buildDocument());
 
           try {
             dataURI = btoa(pdfDocument);
@@ -4573,19 +4608,21 @@
       }, options.flags);
       var wordSpacingPerLine = [];
 
+      var findWidth = function findWidth(v) {
+        return scope.getStringUnitWidth(v, {
+          font: activeFont,
+          charSpace: charSpace,
+          fontSize: activeFontSize,
+          doKerning: false
+        }) * activeFontSize / scaleFactor;
+      };
+
       if (Object.prototype.toString.call(text) === "[object Array]") {
         da = transformTextToSpecialArray(text);
         var newY;
 
         if (align !== "left") {
-          lineWidths = da.map(function (v) {
-            return scope.getStringUnitWidth(v, {
-              font: activeFont,
-              charSpace: charSpace,
-              fontSize: activeFontSize,
-              doKerning: false
-            }) * activeFontSize / scaleFactor;
-          });
+          lineWidths = da.map(findWidth);
         } //The first line uses the "main" Td setting,
         //and the subsequent lines are offset by the
         //previous line's x coordinate.
@@ -4639,6 +4676,34 @@
           for (var h = 0; h < len; h++) {
             text.push(da[h]);
           }
+        } else if (align === "justify" && activeFont.encoding === "Identity-H") {
+          // when using unicode fonts, wordSpacePerLine does not apply
+          text = [];
+          len = da.length;
+          maxWidth = maxWidth !== 0 ? maxWidth : pageWidth;
+          var backToStartX = 0;
+
+          for (var l = 0; l < len; l++) {
+            newY = l === 0 ? getVerticalCoordinate(y) : -leading;
+            newX = l === 0 ? getHorizontalCoordinate(x) : backToStartX;
+
+            if (l < len - 1) {
+              var spacing = scale((maxWidth - lineWidths[l]) / (da[l].split(" ").length - 1));
+              var words = da[l].split(" ");
+              text.push([words[0] + " ", newX, newY]);
+              backToStartX = 0; // distance to reset back to the left
+
+              for (var _i2 = 1; _i2 < words.length; _i2++) {
+                var shiftAmount = (findWidth(words[_i2 - 1] + " " + words[_i2]) - findWidth(words[_i2])) * scaleFactor + spacing;
+                if (_i2 == words.length - 1) text.push([words[_i2], shiftAmount, 0]);else text.push([words[_i2] + " ", shiftAmount, 0]);
+                backToStartX -= shiftAmount;
+              }
+            } else {
+              text.push([da[l], newX, newY]);
+            }
+          }
+
+          text.push(["", backToStartX, 0]);
         } else if (align === "justify") {
           text = [];
           len = da.length;
@@ -6458,7 +6523,7 @@
     API.save = function (filename, options) {
       filename = filename || "generated.pdf";
       options = options || {};
-      options.returnPromise = options.returnPromise || false;
+      options.returnPromise = options.returnPromise || false; // @if MODULE_FORMAT!='cjs'
 
       if (options.returnPromise === false) {
         saveAs(getBlob(buildDocument()), filename);
@@ -6486,7 +6551,8 @@
             reject(e.message);
           }
         });
-      }
+      } // @endif
+
     }; // applying plugins (more methods) ON TOP of built-in API.
     // this is intentional as we allow plugins to override
     // built-ins
@@ -11625,7 +11691,7 @@
        * @param {Integer} [y] top-position for top-left corner of table
        * @param {Object[]} [data] An array of objects containing key-value pairs corresponding to a row of data.
        * @param {String[]} [headers] Omit or null to auto-generate headers at a performance cost
-        * @param {Object} [config.printHeaders] True to print column headers at the top of every page
+         * @param {Object} [config.printHeaders] True to print column headers at the top of every page
        * @param {Object} [config.autoSize] True to dynamically set the column widths to match the widest cell value
        * @param {Object} [config.margins] margin values for left, top, bottom, and width
        * @param {Object} [config.fontSize] Integer fontSize to use (optional)
@@ -14615,7 +14681,7 @@
 
   var clim = new u8([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]); // get base, reverse index map from extra bits
 
-  var freb = function (eb, start) {
+  var freb = function freb(eb, start) {
     var b = new u16(31);
 
     for (var i = 0; i < 31; ++i) {
@@ -14659,14 +14725,16 @@
   // TODO: optimize/split up?
 
 
-  var hMap = function (cd, mb, r) {
+  var hMap = function hMap(cd, mb, r) {
     var s = cd.length; // index
 
     var i = 0; // u16 "map": index -> # of codes with bit length = index
 
     var l = new u16(mb); // length of cd must be 288 (total # of codes)
 
-    for (; i < s; ++i) ++l[cd[i] - 1]; // u16 "map": index -> minimum code for bit length = index
+    for (; i < s; ++i) {
+      ++l[cd[i] - 1];
+    } // u16 "map": index -> minimum code for bit length = index
 
 
     var le = new u16(mb);
@@ -14702,7 +14770,9 @@
     } else {
       co = new u16(s);
 
-      for (i = 0; i < s; ++i) co[i] = rev[le[cd[i] - 1]++] >>> 15 - cd[i];
+      for (i = 0; i < s; ++i) {
+        co[i] = rev[le[cd[i] - 1]++] >>> 15 - cd[i];
+      }
     }
 
     return co;
@@ -14711,18 +14781,28 @@
 
   var flt = new u8(288);
 
-  for (var i = 0; i < 144; ++i) flt[i] = 8;
+  for (var i = 0; i < 144; ++i) {
+    flt[i] = 8;
+  }
 
-  for (var i = 144; i < 256; ++i) flt[i] = 9;
+  for (var i = 144; i < 256; ++i) {
+    flt[i] = 9;
+  }
 
-  for (var i = 256; i < 280; ++i) flt[i] = 7;
+  for (var i = 256; i < 280; ++i) {
+    flt[i] = 7;
+  }
 
-  for (var i = 280; i < 288; ++i) flt[i] = 8; // fixed distance tree
+  for (var i = 280; i < 288; ++i) {
+    flt[i] = 8;
+  } // fixed distance tree
 
 
   var fdt = new u8(32);
 
-  for (var i = 0; i < 32; ++i) fdt[i] = 5; // fixed length map
+  for (var i = 0; i < 32; ++i) {
+    fdt[i] = 5;
+  } // fixed length map
 
 
   var flm = /*#__PURE__*/hMap(flt, 9, 0),
@@ -14731,7 +14811,7 @@
   var fdm = /*#__PURE__*/hMap(fdt, 5, 0),
       fdrm = /*#__PURE__*/hMap(fdt, 5, 1); // find max of array
 
-  var max = function (a) {
+  var max = function max(a) {
     var m = a[0];
 
     for (var i = 1; i < a.length; ++i) {
@@ -14742,25 +14822,25 @@
   }; // read d, starting at bit p and mask with m
 
 
-  var bits = function (d, p, m) {
+  var bits = function bits(d, p, m) {
     var o = p / 8 >> 0;
     return (d[o] | d[o + 1] << 8) >>> (p & 7) & m;
   }; // read d, starting at bit p continuing for at least 16 bits
 
 
-  var bits16 = function (d, p) {
+  var bits16 = function bits16(d, p) {
     var o = p / 8 >> 0;
     return (d[o] | d[o + 1] << 8 | d[o + 2] << 16) >>> (p & 7);
   }; // get end of byte
 
 
-  var shft = function (p) {
+  var shft = function shft(p) {
     return (p / 8 >> 0) + (p & 7 && 1);
   }; // typed array slice - allows garbage collector to free original reference,
   // while being more compatible than .slice
 
 
-  var slc = function (v, s, e) {
+  var slc = function slc(v, s, e) {
     if (s == null || s < 0) s = 0;
     if (e == null || e > v.length) e = v.length; // can't use .constructor in case user-supplied
 
@@ -14770,7 +14850,7 @@
   }; // expands raw DEFLATE data
 
 
-  var inflt = function (dat, buf, st) {
+  var inflt = function inflt(dat, buf, st) {
     // source length
     var sl = dat.length; // have to estimate size
 
@@ -14781,7 +14861,7 @@
 
     if (!buf) buf = new u8(sl * 3); // ensure buffer can fit at least l elements
 
-    var cbuf = function (l) {
+    var cbuf = function cbuf(l) {
       var bl = buf.length; // need to increase size to fit
 
       if (l > bl) {
@@ -14868,7 +14948,9 @@
                   n = 0;
               if (s == 16) n = 3 + bits(dat, pos, 3), pos += 2, c = ldt[i - 1];else if (s == 17) n = 3 + bits(dat, pos, 7), pos += 3;else if (s == 18) n = 11 + bits(dat, pos, 127), pos += 7;
 
-              while (n--) ldt[i++] = c;
+              while (n--) {
+                ldt[i++] = c;
+              }
             }
           } //    length tree                 distance tree
 
@@ -14949,7 +15031,7 @@
   }; // starting at p, write the minimum number of bits that can hold v to d
 
 
-  var wbits = function (d, p, v) {
+  var wbits = function wbits(d, p, v) {
     v <<= p & 7;
     var o = p / 8 >> 0;
     d[o] |= v;
@@ -14957,7 +15039,7 @@
   }; // starting at p, write the minimum number of bits (>8) that can hold v to d
 
 
-  var wbits16 = function (d, p, v) {
+  var wbits16 = function wbits16(d, p, v) {
     v <<= p & 7;
     var o = p / 8 >> 0;
     d[o] |= v;
@@ -14966,7 +15048,7 @@
   }; // creates code lengths from a frequency table
 
 
-  var hTree = function (d, mb) {
+  var hTree = function hTree(d, mb) {
     // Need extra info to make a tree
     var t = [];
 
@@ -15079,15 +15161,16 @@
   }; // get the max length and assign length codes
 
 
-  var ln = function (n, l, d) {
+  var ln = function ln(n, l, d) {
     return n.s == -1 ? Math.max(ln(n.l, l, d + 1), ln(n.r, l, d + 1)) : l[n.s] = d;
   }; // length codes generation
 
 
-  var lc = function (c) {
+  var lc = function lc(c) {
     var s = c.length; // Note that the semicolon was intentional
 
-    while (s && !c[--s]);
+    while (s && !c[--s]) {
+    }
 
     var cl = new u16(++s); //  ind      num         streak
 
@@ -15095,14 +15178,16 @@
         cln = c[0],
         cls = 1;
 
-    var w = function (v) {
+    var w = function w(v) {
       cl[cli++] = v;
     };
 
     for (var i = 1; i <= s; ++i) {
       if (c[i] == cln && i != s) ++cls;else {
         if (!cln && cls > 2) {
-          for (; cls > 138; cls -= 138) w(32754);
+          for (; cls > 138; cls -= 138) {
+            w(32754);
+          }
 
           if (cls > 2) {
             w(cls > 10 ? cls - 11 << 5 | 28690 : cls - 3 << 5 | 12305);
@@ -15111,12 +15196,16 @@
         } else if (cls > 3) {
           w(cln), --cls;
 
-          for (; cls > 6; cls -= 6) w(8304);
+          for (; cls > 6; cls -= 6) {
+            w(8304);
+          }
 
           if (cls > 2) w(cls - 3 << 5 | 8208), cls = 0;
         }
 
-        while (cls--) w(cln);
+        while (cls--) {
+          w(cln);
+        }
 
         cls = 1;
         cln = c[i];
@@ -15127,17 +15216,19 @@
   }; // calculate the length of output from tree, code lengths
 
 
-  var clen = function (cf, cl) {
+  var clen = function clen(cf, cl) {
     var l = 0;
 
-    for (var i = 0; i < cl.length; ++i) l += cf[i] * cl[i];
+    for (var i = 0; i < cl.length; ++i) {
+      l += cf[i] * cl[i];
+    }
 
     return l;
   }; // writes a fixed block
   // returns the new bit pos
 
 
-  var wfblk = function (out, pos, dat) {
+  var wfblk = function wfblk(out, pos, dat) {
     // no need to write 00 as type: TypedArray defaults to 0
     var s = dat.length;
     var o = shft(pos + 2);
@@ -15146,13 +15237,15 @@
     out[o + 2] = out[o] ^ 255;
     out[o + 3] = out[o + 1] ^ 255;
 
-    for (var i = 0; i < s; ++i) out[o + i + 4] = dat[i];
+    for (var i = 0; i < s; ++i) {
+      out[o + i + 4] = dat[i];
+    }
 
     return (o + 4 + s) * 8;
   }; // writes a block
 
 
-  var wblk = function (dat, out, final, syms, lf, df, eb, li, bs, bl, p) {
+  var wblk = function wblk(dat, out, final, syms, lf, df, eb, li, bs, bl, p) {
     wbits(out, p++, final);
     ++lf[256];
 
@@ -15174,9 +15267,13 @@
 
     var lcfreq = new u16(19);
 
-    for (var i = 0; i < lclt.length; ++i) lcfreq[lclt[i] & 31]++;
+    for (var i = 0; i < lclt.length; ++i) {
+      lcfreq[lclt[i] & 31]++;
+    }
 
-    for (var i = 0; i < lcdt.length; ++i) lcfreq[lcdt[i] & 31]++;
+    for (var i = 0; i < lcdt.length; ++i) {
+      lcfreq[lcdt[i] & 31]++;
+    }
 
     var _e = hTree(lcfreq, 7),
         lct = _e[0],
@@ -15184,7 +15281,8 @@
 
     var nlcc = 19;
 
-    for (; nlcc > 4 && !lct[clim[nlcc - 1]]; --nlcc);
+    for (; nlcc > 4 && !lct[clim[nlcc - 1]]; --nlcc) {
+    }
 
     var flen = bl + 5 << 3;
     var ftlen = clen(lf, flt) + clen(df, fdt) + eb;
@@ -15201,7 +15299,9 @@
       wbits(out, p + 10, nlcc - 4);
       p += 14;
 
-      for (var i = 0; i < nlcc; ++i) wbits(out, p + 3 * i, lct[clim[i]]);
+      for (var i = 0; i < nlcc; ++i) {
+        wbits(out, p + 3 * i, lct[clim[i]]);
+      }
 
       p += 3 * nlcc;
       var lcts = [lclt, lcdt];
@@ -15241,7 +15341,7 @@
 
   var et = /*#__PURE__*/new u8(0); // compresses data into a raw DEFLATE buffer
 
-  var dflt = function (dat, lvl, plvl, pre, post, lst) {
+  var dflt = function dflt(dat, lvl, plvl, pre, post, lst) {
     var s = dat.length;
     var o = new u8(pre + s + 5 * (1 + Math.floor(s / 7000)) + post); // writing to this writes to the output buffer
 
@@ -15273,7 +15373,7 @@
       var bs1_1 = Math.ceil(plvl / 3),
           bs2_1 = 2 * bs1_1;
 
-      var hsh = function (i) {
+      var hsh = function hsh(i) {
         return (dat[i] ^ dat[i + 1] << bs1_1 ^ dat[i + 2] << bs2_1) & msk_1;
       }; // 24576 is an arbitrary number of maximum symbols per block
       // 424 buffer for last block
@@ -15310,9 +15410,13 @@
             pos = wblk(dat, w, 0, syms, lf, df, eb, li, bs, i - bs, pos);
             li = lc_1 = eb = 0, bs = i;
 
-            for (var j = 0; j < 286; ++j) lf[j] = 0;
+            for (var j = 0; j < 286; ++j) {
+              lf[j] = 0;
+            }
 
-            for (var j = 0; j < 30; ++j) df[j] = 0;
+            for (var j = 0; j < 30; ++j) {
+              df[j] = 0;
+            }
           } //  len    dist   chain
 
 
@@ -15332,7 +15436,8 @@
               if (dat[i + l] == dat[i + l - dif]) {
                 var nl = 0;
 
-                for (; nl < ml && dat[i + nl] == dat[i + nl - dif]; ++nl);
+                for (; nl < ml && dat[i + nl] == dat[i + nl - dif]; ++nl) {
+                }
 
                 if (nl > l) {
                   l = nl, d = dif; // break out early when we reach "nice" (we are satisfied enough)
@@ -15387,11 +15492,11 @@
   }; // CRC32 table
 
 
-  var adler = function () {
+  var adler = function adler() {
     var a = 1,
         b = 0;
     return {
-      p: function (d) {
+      p: function p(d) {
         // closures have awful performance
         var n = a,
             m = b;
@@ -15400,37 +15505,41 @@
         for (var i = 0; i != l;) {
           var e = Math.min(i + 5552, l);
 
-          for (; i < e; ++i) n += d[i], m += n;
+          for (; i < e; ++i) {
+            n += d[i], m += n;
+          }
 
           n %= 65521, m %= 65521;
         }
 
         a = n, b = m;
       },
-      d: function () {
+      d: function d() {
         return (a >>> 8 << 16 | (b & 255) << 8 | b >>> 8) + ((a & 255) << 23) * 2;
       }
     };
   };
 
-  var dopt = function (dat, opt, pre, post, st) {
+  var dopt = function dopt(dat, opt, pre, post, st) {
     return dflt(dat, opt.level == null ? 6 : opt.level, opt.mem == null ? Math.ceil(Math.max(8, Math.min(13, Math.log(dat.length))) * 1.5) : 12 + opt.mem, pre, post, !st);
   }; // Walmart object spread
 
 
-  var wbytes = function (d, b, v) {
-    for (; v; ++b) d[b] = v, v >>>= 8;
+  var wbytes = function wbytes(d, b, v) {
+    for (; v; ++b) {
+      d[b] = v, v >>>= 8;
+    }
   }; // gzip header
 
 
-  var zlh = function (c, o) {
+  var zlh = function zlh(c, o) {
     var lv = o.level,
         fl = lv == 0 ? 0 : lv < 6 ? 1 : lv == 9 ? 3 : 2;
     c[0] = 120, c[1] = fl << 6 | (fl ? 32 - 2 * fl : 1);
   }; // zlib valid
 
 
-  var zlv = function (d) {
+  var zlv = function zlv(d) {
     if ((d[0] & 15) != 8 || d[0] >>> 4 > 7 || (d[0] << 8 | d[1]) % 31) throw 'invalid zlib data';
     if (d[1] & 32) throw 'invalid zlib data: preset dictionaries not supported';
   };
@@ -15649,7 +15758,8 @@
      */
 
     jsPDFAPI.loadFile = function (url, sync, callback) {
-      return browserRequest(url, sync, callback);
+      // @if MODULE_FORMAT!='cjs'
+      return browserRequest(url, sync, callback); // @endif
     };
     /**
      * @name loadImageFile
@@ -15725,29 +15835,10 @@
       return function () {
         if (globalObject["html2canvas"]) {
           return Promise.resolve(globalObject["html2canvas"]);
-        }
+        } // @if MODULE_FORMAT='es'
 
-        if ((typeof exports === "undefined" ? "undefined" : _typeof(exports)) === "object" && typeof module !== "undefined") {
-          return new Promise(function (resolve, reject) {
-            try {
-              resolve(require("html2canvas"));
-            } catch (e) {
-              reject(e);
-            }
-          });
-        }
 
-        if (typeof define === "function" && define.amd) {
-          return new Promise(function (resolve, reject) {
-            try {
-              require(["html2canvas"], resolve);
-            } catch (e) {
-              reject(e);
-            }
-          });
-        }
-
-        return Promise.reject(new Error("Could not load html2canvas"));
+        return import('html2canvas'); // @endif
       }().catch(function (e) {
         return Promise.reject(new Error("Could not load html2canvas: " + e));
       }).then(function (html2canvas) {
@@ -15759,29 +15850,10 @@
       return function () {
         if (globalObject["DOMPurify"]) {
           return Promise.resolve(globalObject["DOMPurify"]);
-        }
+        } // @if MODULE_FORMAT='es'
 
-        if ((typeof exports === "undefined" ? "undefined" : _typeof(exports)) === "object" && typeof module !== "undefined") {
-          return new Promise(function (resolve, reject) {
-            try {
-              resolve(require("dompurify"));
-            } catch (e) {
-              reject(e);
-            }
-          });
-        }
 
-        if (typeof define === "function" && define.amd) {
-          return new Promise(function (resolve, reject) {
-            try {
-              require(["dompurify"], resolve);
-            } catch (e) {
-              reject(e);
-            }
-          });
-        }
-
-        return Promise.reject(new Error("Could not load dompurify"));
+        return import('dompurify'); // @endif
       }().catch(function (e) {
         return Promise.reject(new Error("Could not load dompurify: " + e));
       }).then(function (dompurify) {
@@ -17692,13 +17764,13 @@
      *
      Color    Allowed      Interpretation
      Type     Bit Depths
-        0       1,2,4,8,16  Each pixel is a grayscale sample.
-        2       8,16        Each pixel is an R,G,B triple.
-        3       1,2,4,8     Each pixel is a palette index;
+         0       1,2,4,8,16  Each pixel is a grayscale sample.
+         2       8,16        Each pixel is an R,G,B triple.
+         3       1,2,4,8     Each pixel is a palette index;
                            a PLTE chunk must appear.
-        4       8,16        Each pixel is a grayscale sample,
+         4       8,16        Each pixel is a grayscale sample,
                            followed by an alpha sample.
-        6       8,16        Each pixel is an R,G,B triple,
+         6       8,16        Each pixel is an R,G,B triple,
                            followed by an alpha sample.
     */
 
@@ -25150,29 +25222,10 @@
       return function () {
         if (globalObject["canvg"]) {
           return Promise.resolve(globalObject["canvg"]);
-        }
+        } // @if MODULE_FORMAT='es'
 
-        if ((typeof exports === "undefined" ? "undefined" : _typeof(exports)) === "object" && typeof module !== "undefined") {
-          return new Promise(function (resolve, reject) {
-            try {
-              resolve(require("canvg"));
-            } catch (e) {
-              reject(e);
-            }
-          });
-        }
 
-        if (typeof define === "function" && define.amd) {
-          return new Promise(function (resolve, reject) {
-            try {
-              require(["canvg"], resolve);
-            } catch (e) {
-              reject(e);
-            }
-          });
-        }
-
-        return Promise.reject(new Error("Could not load canvg"));
+        return import('canvg'); // @endif
       }().catch(function (e) {
         return Promise.reject(new Error("Could not load canvg: " + e));
       }).then(function (canvg) {
@@ -25988,9 +26041,9 @@
                       if (Object.prototype.toString.call(text[s]) === '[object Array]') {
                           cmapConfirm = fonts[key].metadata.cmap.unicode.codeMap[strText[s][0].charCodeAt(0)]; //Make sure the cmap has the corresponding glyph id
                       } else {
-                       }
+                        }
                   //}
-               } else {
+                } else {
                   cmapConfirm = fonts[key].metadata.cmap.unicode.codeMap[strText[s].charCodeAt(0)]; //Make sure the cmap has the corresponding glyph id
               }*/
         }

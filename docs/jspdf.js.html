@@ -828,15 +828,6 @@ function jsPDF(options) {
     );
   });
 
-  var getArrayBuffer = (API.__private__.getArrayBuffer = function(data) {
-    var len = data.length,
-      ab = new ArrayBuffer(len),
-      u8 = new Uint8Array(ab);
-
-    while (len--) u8[len] = data.charCodeAt(len);
-    return ab;
-  });
-
   var standardFonts = [
     ["Helvetica", "helvetica", "normal", "WinAnsiEncoding"],
     ["Helvetica-Bold", "helvetica", "bold", "WinAnsiEncoding"],
@@ -3042,11 +3033,52 @@ function jsPDF(options) {
 
     setOutputDestination(pages[currentPage]);
 
+    return content;
+  });
+
+  var getString = (API.__private__.getString = function (content) {
     return content.join("\n");
   });
 
-  var getBlob = (API.__private__.getBlob = function(data) {
-    return new Blob([getArrayBuffer(data)], {
+  var getArrayBuffer = (API.__private__.getArrayBuffer = function (content) {
+    let length = 0;
+    for (let i = 0; i &lt; content.length; i++) {
+      let contentLine = content[i];
+      length += contentLine.length + 1; // +1 for newline
+    }
+
+    let arrayBuffer = new ArrayBuffer(length);
+    let uint8Array = new Uint8Array(arrayBuffer);
+    let index = 0;
+
+    for (let i = 0; i &lt; content.length; i++) {
+      let contentLine = content[i];
+      for (let j = 0; j &lt; contentLine.length; j++) {
+        uint8Array[index++] = contentLine.charCodeAt(j);
+      }
+      uint8Array[index++] = 0x0a; // newline
+    }
+
+    return arrayBuffer;
+  });
+
+  var getBlob = (API.__private__.getBlob = function (content) {
+    let blobs = [];
+
+    for (let i = 0; i &lt; content.length; i++) {
+      let contentLine = content[i];
+      let arrayBuffer = new ArrayBuffer(contentLine.length + 1); // +1 for newline
+      let uint8Array = new Uint8Array(arrayBuffer);
+
+      for (let j = 0; j &lt; contentLine.length; j++) {
+        uint8Array[j] = contentLine.charCodeAt(j);
+      }
+
+      uint8Array[contentLine.length] = 0x0a; // newline
+      blobs.push(new Blob([arrayBuffer]));
+    }
+
+    return new Blob(blobs, {
       type: "application/pdf"
     });
   });
@@ -3091,7 +3123,7 @@ function jsPDF(options) {
 
     switch (type) {
       case undefined:
-        return buildDocument();
+        return getString(buildDocument());
       case "save":
         API.save(options.filename);
         break;
@@ -3120,7 +3152,7 @@ function jsPDF(options) {
       case "datauristring":
       case "dataurlstring":
         var dataURI = "";
-        var pdfDocument = buildDocument();
+        var pdfDocument = getString(buildDocument());
         try {
           dataURI = btoa(pdfDocument);
         } catch (e) {
@@ -3850,23 +3882,23 @@ function jsPDF(options) {
     flags = Object.assign({ autoencode: true, noBOM: true }, options.flags);
 
     var wordSpacingPerLine = [];
-
+    var findWidth = function(v) {
+      return (
+        (scope.getStringUnitWidth(v, {
+          font: activeFont,
+          charSpace: charSpace,
+          fontSize: activeFontSize,
+          doKerning: false
+        }) *
+          activeFontSize) /
+        scaleFactor
+      );
+    };
     if (Object.prototype.toString.call(text) === "[object Array]") {
       da = transformTextToSpecialArray(text);
       var newY;
       if (align !== "left") {
-        lineWidths = da.map(function(v) {
-          return (
-            (scope.getStringUnitWidth(v, {
-              font: activeFont,
-              charSpace: charSpace,
-              fontSize: activeFontSize,
-              doKerning: false
-            }) *
-              activeFontSize) /
-            scaleFactor
-          );
-        });
+        lineWidths = da.map(findWidth);
       }
       //The first line uses the "main" Td setting,
       //and the subsequent lines are offset by the
@@ -3913,11 +3945,41 @@ function jsPDF(options) {
         for (var h = 0; h &lt; len; h++) {
           text.push(da[h]);
         }
+      } else if (align === "justify" &amp;&amp; activeFont.encoding === "Identity-H") {
+        // when using unicode fonts, wordSpacePerLine does not apply
+        text = [];
+        len = da.length;
+        maxWidth = maxWidth !== 0 ? maxWidth : pageWidth;
+        let backToStartX = 0;
+        for (var l = 0; l &lt; len; l++) {
+          newY = l === 0 ? getVerticalCoordinate(y) : -leading;
+          newX = l === 0 ? getHorizontalCoordinate(x) : backToStartX;
+          if (l &lt; len - 1) {
+            let spacing = scale(
+              (maxWidth - lineWidths[l]) / (da[l].split(" ").length - 1)
+            );
+            let words = da[l].split(" ");
+            text.push([words[0] + " ", newX, newY]);
+            backToStartX = 0; // distance to reset back to the left
+            for (let i = 1; i &lt; words.length; i++) {
+              let shiftAmount =
+                (findWidth(words[i - 1] + " " + words[i]) -
+                  findWidth(words[i])) *
+                  scaleFactor +
+                spacing;
+              if (i == words.length - 1) text.push([words[i], shiftAmount, 0]);
+              else text.push([words[i] + " ", shiftAmount, 0]);
+              backToStartX -= shiftAmount;
+            }
+          } else {
+            text.push([da[l], newX, newY]);
+          }
+        }
+        text.push(["", backToStartX, 0]);
       } else if (align === "justify") {
         text = [];
         len = da.length;
         maxWidth = maxWidth !== 0 ? maxWidth : pageWidth;
-
         for (var l = 0; l &lt; len; l++) {
           newY = l === 0 ? getVerticalCoordinate(y) : -leading;
           newX = l === 0 ? getHorizontalCoordinate(x) : 0;
@@ -6141,7 +6203,7 @@ export default jsPDF;
 <br class="clear">
 
 <footer>
-    Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.6.4</a> on Fri Jan 28 2022 16:38:20 GMT+0100 (Central European Standard Time) using the <a href="https://github.com/clenemt/docdash">docdash</a> theme.
+    Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.6.4</a> on Tue Aug 06 2024 14:10:56 GMT-0300 (Horário Padrão de Brasília) using the <a href="https://github.com/clenemt/docdash">docdash</a> theme.
 </footer>
 
 <script>prettyPrint();</script>
