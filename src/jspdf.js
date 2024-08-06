@@ -2966,7 +2966,7 @@ function jsPDF(options) {
     }
   });
 
-  var buildDocument = (API.__private__.buildDocument = function() {
+  var buildDocument = (API.__private__.buildDocument = function(raw = false) {
     resetDocument();
     setOutputDestination(content);
 
